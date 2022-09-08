@@ -1,45 +1,48 @@
 using LinearAlgebra
-using Meshes: Vec3, Point3, Ball, Ngon, SimpleMesh, connect
+using Meshes: Vec3f, Point3f, Ball, Ngon, SimpleMesh, connect
 using MeshViz: viz, viz!
-using Makie: Makie, ispressed, cam3d!, meshscatter!, center!, Scene, Mouse, Keyboard, Observable, Rect, @lift
-using GLMakie: GLMakie
-using ColorTypes: RGB
+using GLMakie: GLMakie, Makie, ispressed, cam3d!, meshscatter!, center!, Scene, Mouse, Keyboard, Observable, Rect, VideoStream, recordframe!, save, @lift
 
-let
+function simulate(record=false)
     n = 128
-    quad_size = 1.0 / n
-    dt = 4e-2 / n
+    quad_size = 1.0f0 / n
+    dt = 0.04f0 / n
     substeps = Int(ceil(1 / 60 / dt))
-    gravity = Vec3(0, 0, -9.8)
-    spring_Y = 3e4
-    dashpot_damping = 1e4
+    gravity = Vec3f(0, 0, -9.8)
+    spring_Y = 30000.0f0
+    dashpot_damping = 10000.0f0
     drag_damping = 1
 
-    ball_radius = 0.3
-    ball_center = Point3(0, 0, 0)
+    balls = [
+        (Point3f(0, 0, 0), 0.2f0),
+        (Point3f(-0.5, 0, 0), 0.2f0),
+        (Point3f(0.5, 0, 0), 0.2f0),
+        (Point3f(0, 0.5, 0), 0.2f0),
+        (Point3f(0, 0, -0.5), 0.2f0),
+    ]
+    ball_radius = 0.3f0
+    ball_center = Point3f(0.0, 0, 0)
 
-    x = [Point3(0.0, 0, 0) for _ in 1:n, _ in 1:n]
-    v = zeros(Vec3, n, n)
+    x = [Point3f(0.0, 0, 0) for _ in 1:n, _ in 1:n]
+    v = zeros(Vec3f, n, n)
     num_triangles = (n - 1) * (n - 1) * 2
-    indices = fill((0, 0, 0), num_triangles)
-    vertices = [Point3(0.0, 0, 0) for _ in 1:n*n]
+    indices = fill((0.0f0, 0.0f0, 0.0f0), num_triangles)
+    vertices = [Point3f(0.0, 0, 0) for _ in 1:n*n]
 
     bending_strings = false
 
     function initialize_mass_points()
-        rx = (rand() - 0.5) * 0.1
-        ry = (rand() - 0.5) * 0.1
+        rx = (rand(Float32) - 0.5f0) * 0.1f0
+        ry = (rand(Float32) - 0.5f0) * 0.1f0
 
         for i in 1:n, j in 1:n
-            x[i, j] = Vec3(
-                i * quad_size - 0.5 + rx,
-                j * quad_size - 0.5 + ry,
-                0.6,
+            x[i, j] = Vec3f(
+                i * quad_size - 0.5f0 + rx,
+                j * quad_size - 0.5f0 + ry,
+                0.6f0,
             )
         end
     end
-
-    initialize_mass_points()
 
     function initialize_mesh_indices()
         for i in 1:n-1, j in 1:n-1
@@ -49,9 +52,7 @@ let
         end
     end
 
-    initialize_mesh_indices()
-
-    spring_offsets = []
+    spring_offsets = CartesianIndex{2}[]
     if bending_strings
         for i in -1:1, j in -1:1
             if (i, j) != (0, 0)
@@ -67,12 +68,12 @@ let
     end
 
     function substep()
-        Threads.@threads for idx in CartesianIndices(x)
-            v[idx] = v[idx] + gravity * dt
+        Threads.@threads for i in CartesianIndices(x)
+            v[i] = v[i] + gravity * dt
         end
 
         Threads.@threads for i in CartesianIndices(x)
-            force = Vec3(0, 0, 0)
+            force = Vec3f(0, 0, 0)
             for offset in spring_offsets
                 j = i + offset
                 if 1 <= j[1] <= n && 1 <= j[2] <= n
@@ -90,10 +91,12 @@ let
 
         Threads.@threads for i in CartesianIndices(x)
             v[i] = v[i] * exp(-drag_damping * dt)
-            offset_to_center = x[i] - ball_center
-            if norm(offset_to_center) <= ball_radius
-                normal = offset_to_center / norm(offset_to_center)
-                v[i] = v[i] - min(v[i] ⋅ normal, 0) * normal
+            for (ball_center, ball_radius) in balls
+                offset_to_center = x[i] - ball_center
+                if norm(offset_to_center) <= ball_radius
+                    normal = offset_to_center / norm(offset_to_center)
+                    v[i] = v[i] - min(v[i] ⋅ normal, 0.0f0) * normal
+                end
             end
             x[i] = x[i] + dt * v[i]
         end
@@ -108,63 +111,74 @@ let
     GLMakie.activate!()
     GLMakie.set_window_config!(;
         vsync=false,
-        framerate=60.0,
+        framerate=30,
         float=false,
         pause_rendering=false,
-        focus_on_show=false,
+        focus_on_show=true,
         decorated=true,
-        title="Julia Cloth Simulation on GLMakie (Press Q to exit)"
+        title="Julia Cloth Simulation on GLMakie (Press DEL to exit)"
     )
     scene = Scene(
         backgroundcolor=:white,
-        ssao=Makie.SSAO(),
+        ssao=GLMakie.SSAO(),
         lights=Makie.automatic,
-        resolution=(500, 500),
+        resolution=(1280, 720),
     )
     glfw_window = GLMakie.to_native(display(scene))
-    relative_space = Makie.camrelative(scene)
-
-    # Draw the ball, use coefficient 0.95 to prevent visual penetration
-    viz!(scene, Ball(ball_center, ball_radius * 0.95), color=:gray)
-    plt = Ref{Any}(nothing)
-    cam3d!(scene)
-    center!(scene)
 
     running = true
-    time = Observable(0.0)
+    time = 0.0
+    initialize_mesh_indices()
+    initialize_mass_points()
     update_vertices()
     connec = connect.(indices, Ngon)
     mesh = SimpleMesh(vertices, connec)
+    plt = Ref(viz!(scene, mesh, color=1:length(indices)))
+
+    # Draw the ball, use coefficient 0.95 to prevent visual penetration
+    for (ball_center, ball_radius) in balls
+        viz!(scene, Ball(ball_center, ball_radius * 0.95f0), color=:gray)
+    end
+    cam3d!(scene)
+    center!(scene)
 
     function update()
+        if record
+            stream = VideoStream(scene, framerate=24)
+        end
         while running
-            if time[] > 1.5
+            @show time
+            if time > 1.5
                 initialize_mass_points()
-                time[] = 0.0
+                time = 0.0
             end
-
             for _ in 1:substeps
                 substep()
-                time[] += dt
+                time += dt
             end
             update_vertices()
             if !isnothing(plt[])
                 delete!(scene, plt[])
             end
             plt[] = viz!(scene, mesh, color=1:length(indices))
+            if record
+                recordframe!(stream)
+            end
         end
 
+        if record
+            save("cloth_simulation.mp4", stream)
+        end
         GLMakie.destroy!(glfw_window)
     end
 
-    b = @task update()
-    schedule(b)
-
     GLMakie.on(scene.events.keyboardbutton) do event
-        if event.key == Keyboard.q
+        if event.key == Keyboard.delete
             running = false
         end
     end
 
-    wait(b)
+    update()
 end
+
+simulate(true)
