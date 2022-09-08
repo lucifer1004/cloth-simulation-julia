@@ -20,13 +20,11 @@ function simulate(record=false)
         (Point3f(0, 0.5, 0), 0.2f0),
         (Point3f(0, 0, -0.5), 0.2f0),
     ]
-    ball_radius = 0.3f0
-    ball_center = Point3f(0.0, 0, 0)
 
     x = [Point3f(0.0, 0, 0) for _ in 1:n, _ in 1:n]
     v = zeros(Vec3f, n, n)
     num_triangles = (n - 1) * (n - 1) * 2
-    indices = fill((0.0f0, 0.0f0, 0.0f0), num_triangles)
+    indices = Vector{NTuple{3,Int}}(undef, num_triangles)
     vertices = [Point3f(0.0, 0, 0) for _ in 1:n*n]
 
     bending_strings = false
@@ -36,7 +34,7 @@ function simulate(record=false)
         ry = (rand(Float32) - 0.5f0) * 0.1f0
 
         for i in 1:n, j in 1:n
-            x[i, j] = Vec3f(
+            x[i, j] = Point3f(
                 i * quad_size - 0.5f0 + rx,
                 j * quad_size - 0.5f0 + ry,
                 0.6f0,
